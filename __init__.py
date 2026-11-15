@@ -96,6 +96,8 @@ class Worker:
         self.schedule: List[dict] = []
         self.last_sched = 0.0
         self.trackers: Dict[str, "Tracker"] = {}
+        self.abandoned = set()
+        self.st.setdefault("finished", [])
 
     # ---------- config (relue à chaque tour : les changements dans l'interface s'appliquent)
     @property
@@ -260,17 +262,18 @@ class Worker:
             self.schedule, self.last_sched = self.fetch_schedule(), time.time()
         t = now_utc()
         for m in self.schedule:
-            if m["kickoff"] - BEFORE <= t <= m["kickoff"] + AFTER and m["event_id"] not in self.st["done"]:
+            if (m["kickoff"] - BEFORE <= t <= m["kickoff"] + AFTER
+                    and m["event_id"] not in self.st["finished"] and m["event_id"] not in self.abandoned):
                 self.trackers.setdefault(m["event_id"], Tracker(self, m))
         for key in list(self.trackers):
             tr = self.trackers[key]
             m = tr.match
             gone = t > m["kickoff"] + AFTER
-            never = tr.goals is None and t > m["kickoff"] + GIVE_UP
+            never = tr.goals is None and tr.polls >= 5 and t > m["kickoff"] + GIVE_UP
             if tr.finished or gone or never:
                 if never and not tr.finished:
                     note(f"{m['team']['label']} introuvable en direct (reporté ou non couvert)")
-                    self.mark_done(key)
+                    self.abandoned.add(key)          # en mémoire seulement : un redémarrage réessaie
                 elif gone and not tr.finished:
                     tr.finish()
                 del self.trackers[key]
@@ -284,7 +287,7 @@ class Worker:
             STATUS["status"] = "EN VEILLE"
 
     def mark_done(self, key):
-        self.st["done"] = (self.st.get("done", []) + [key])[-50:]
+        self.st["finished"] = (self.st.get("finished", []) + [key])[-50:]
         self.save_state()
 
 
@@ -297,6 +300,7 @@ class Tracker:
         self.missing = 0
         self.finished = False
         self.pending = None        # dernier affichage raté, renvoyé au tour suivant
+        self.polls = 0             # nombre de vérifications du direct pour ce match
 
     def tile(self, team):
         return "{B}" if team["id"] == self.me["af"] else "{R}"
@@ -320,6 +324,7 @@ class Tracker:
         self.pending = None if self.w.board_send(lines, minutes) else (lines, minutes)
 
     def update(self, live):
+        self.polls += 1
         if self.pending:
             self.send(*self.pending)
         af = self.me["af"]
