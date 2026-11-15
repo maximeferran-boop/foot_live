@@ -1,0 +1,29 @@
+{
+  "id": "foot_live",
+  "name": "Foot en direct",
+  "version": "1.2.0",
+  "description": "Affiche le score en direct (coup d'envoi, buts, fin) d'équipes suivies, en interrompant la rotation.",
+  "author": "Max",
+  "icon": "trophy",
+  "category": "data",
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "api_key": { "type": "string", "title": "Clé API-Football", "ui:widget": "password" },
+      "teams": {
+        "type": "string",
+        "title": "Équipes suivies (JSON)",
+        "ui:widget": "textarea",
+        "default": "[{\"label\":\"CAEN\",\"af\":88,\"tsdb\":134787},{\"label\":\"FRANCE\",\"af\":2,\"tsdb\":133913}]"
+      },
+      "board_id": { "type": "string", "title": "ID du board", "default": "primary" },
+      "board_cols": { "type": "integer", "title": "Colonnes du board", "default": 15, "minimum": 15, "maximum": 22 },
+      "poll_seconds": { "type": "integer", "title": "Intervalle pendant un match (s)", "default": 120, "minimum": 60, "maximum": 600 },
+      "final_minutes": { "type": "integer", "title": "Durée d'affichage du score final (min)", "default": 30, "minimum": 5, "maximum": 180 },
+      "refresh_seconds": { "type": "integer", "title": "Rafraîchissement du diagnostic (s)", "default": 60, "minimum": 60, "maximum": 3600 }
+    },
+    "required": ["api_key"]
+  },
+  "variables": { "simple": ["status", "next_match", "quota_used", "last_event", "journal"] },
+  "max_lengths": { "status": 15, "next_match": 15, "quota_used": 3, "last_event": 15, "journal": 500 }
+}
