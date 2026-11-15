@@ -174,21 +174,38 @@ class Worker:
 
     # ---------- FiestaBoard
     def board_send(self, lines, minutes):
+        """Essaie la grille avec pastilles ; si refusée, repli en texte simple. Renvoie True si affiché."""
         board = self.cfg.get("board_id") or "primary"
+        url = f"{FB_URL}/v1/boards/{board}/message"
         cols = self.cols
         rows = 3 if cols <= 15 else 6
-        grid = [encode(l, cols) for l in lines[:rows]]
-        grid += [[0] * cols for _ in range(rows - len(grid))]
-        body = {"characters": grid, "duration_minutes": minutes, "revert_mode": "schedule"}
-        readable = " / ".join(l.replace("{B}", "#").replace("{R}", "#") for l in lines)
-        try:
-            http_json(f"{FB_URL}/v1/boards/{board}/message", None, "POST", body)
-            note("board <- " + readable)
-            STATUS["last_event"] = clean(" ".join(lines[:2]).replace("{B}", "").replace("{R}", ""))
-        except urllib.error.HTTPError as e:
-            note(f"FiestaBoard a refusé le message ({e.code})")
-        except Exception as e:
-            note(f"FiestaBoard injoignable : {e}")
+        plain = [clean(l.replace("{B}", " ").replace("{R}", " "), cols) for l in lines[:rows]]
+        attempts = []
+        if not self.st.get("grid_refused"):
+            grid = [encode(l, cols) for l in lines[:rows]]
+            grid += [[0] * cols for _ in range(rows - len(grid))]
+            attempts.append(("grille", {"characters": grid}))
+        attempts.append(("texte", {"lines": plain}))
+        for mode, content in attempts:
+            body = {**content, "duration_minutes": minutes, "revert_mode": "schedule"}
+            try:
+                http_json(url, None, "POST", body)
+                note(f"board ({mode}) <- " + " / ".join(plain))
+                STATUS["last_event"] = clean(" ".join(plain[:2]))
+                return True
+            except urllib.error.HTTPError as e:
+                try:
+                    detail = e.read().decode("utf-8", "ignore")[:200]
+                except Exception:
+                    detail = ""
+                note(f"FiestaBoard a refusé ({mode}, {e.code}) {detail}")
+                if mode == "grille" and e.code == 400:
+                    self.st["grid_refused"] = True      # on ne réessaie plus la grille
+                    self.save_state()
+            except Exception as e:
+                note(f"FiestaBoard injoignable : {e}")
+                return False
+        return False
 
     # ---------- calendrier
     def fetch_schedule(self):
@@ -279,6 +296,7 @@ class Tracker:
         self.home = self.away = None
         self.missing = 0
         self.finished = False
+        self.pending = None        # dernier affichage raté, renvoyé au tour suivant
 
     def tile(self, team):
         return "{B}" if team["id"] == self.me["af"] else "{R}"
@@ -298,7 +316,12 @@ class Tracker:
         el, ex = status.get("elapsed"), status.get("extra")
         return "" if el is None else (f"{el}+{ex}'" if ex else f"{el}'")
 
+    def send(self, lines, minutes):
+        self.pending = None if self.w.board_send(lines, minutes) else (lines, minutes)
+
     def update(self, live):
+        if self.pending:
+            self.send(*self.pending)
         af = self.me["af"]
         fx = next((f for f in live if af in (f["teams"]["home"]["id"], f["teams"]["away"]["id"])), None)
         if fx is None:
@@ -315,7 +338,7 @@ class Tracker:
         if self.goals is None:
             self.goals = (gh, ga)
             l3 = "COUP D'ENVOI" if (status.get("elapsed") or 0) <= 5 else "EN COURS"
-            self.w.board_send(self.rows(gh, ga, l3), 180)
+            self.send(self.rows(gh, ga, l3), 180)
             return
         if (gh, ga) == self.goals:
             return
@@ -326,7 +349,7 @@ class Tracker:
         else:
             scorer = self.home if gh > oh else self.away
             l3 = f"{self.tile(scorer)}BUT ! {self.minute(status)}"
-        self.w.board_send(self.rows(gh, ga, l3), 180)
+        self.send(self.rows(gh, ga, l3), 180)
 
     def finish(self):
         if self.finished or self.goals is None:

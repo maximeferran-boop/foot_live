@@ -1,7 +1,7 @@
 {
   "id": "foot_live",
   "name": "Foot en direct",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Affiche le score en direct (coup d'envoi, buts, fin) d'équipes suivies, en interrompant la rotation.",
   "author": "Max",
   "icon": "trophy",
