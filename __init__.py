@@ -50,6 +50,30 @@ def clean(text, max_len=15):
     return text.upper().strip()[:max_len]
 
 
+# Codes caractères Vestaboard (0 = vide). Couleurs : 63 rouge … 67 bleu.
+VB = {" ": 0}
+VB.update({chr(ord("A") + i): i + 1 for i in range(26)})
+VB.update({str(d): 26 + d for d in range(1, 10)})
+VB["0"] = 36
+VB.update({"!": 37, "@": 38, "#": 39, "$": 40, "(": 41, ")": 42, "-": 44, "+": 46, "&": 47,
+           "=": 48, ";": 49, ":": 50, "'": 52, '"': 53, "%": 54, ",": 55, ".": 56, "/": 59,
+           "?": 60})
+TILE = {"R": 63, "O": 64, "Y": 65, "G": 66, "B": 67, "V": 68, "W": 69}
+
+
+def encode(line, cols):
+    """Texte -> codes. Une pastille de couleur s'écrit {B} (bleu), {R} (rouge)…"""
+    out, i = [], 0
+    while i < len(line):
+        if line[i] == "{" and i + 2 < len(line) and line[i + 2] == "}" and line[i + 1] in TILE:
+            out.append(TILE[line[i + 1]])
+            i += 3
+            continue
+        out.append(VB.get(clean(line[i], 1) or " ", 0))
+        i += 1
+    return (out + [0] * cols)[:cols]
+
+
 def now_utc():
     return datetime.now(timezone.utc)
 
@@ -151,12 +175,16 @@ class Worker:
     # ---------- FiestaBoard
     def board_send(self, lines, minutes):
         board = self.cfg.get("board_id") or "primary"
-        body = {"lines": [clean(l, self.cols) for l in lines],
-                "duration_minutes": minutes, "revert_mode": "schedule"}
+        cols = self.cols
+        rows = 3 if cols <= 15 else 6
+        grid = [encode(l, cols) for l in lines[:rows]]
+        grid += [[0] * cols for _ in range(rows - len(grid))]
+        body = {"characters": grid, "duration_minutes": minutes, "revert_mode": "schedule"}
+        readable = " / ".join(l.replace("{B}", "#").replace("{R}", "#") for l in lines)
         try:
             http_json(f"{FB_URL}/v1/boards/{board}/message", None, "POST", body)
-            note("board <- " + " / ".join(body["lines"]))
-            STATUS["last_event"] = body["lines"][0]
+            note("board <- " + readable)
+            STATUS["last_event"] = clean(" ".join(lines[:2]).replace("{B}", "").replace("{R}", ""))
         except urllib.error.HTTPError as e:
             note(f"FiestaBoard a refusé le message ({e.code})")
         except Exception as e:
@@ -252,11 +280,18 @@ class Tracker:
         self.missing = 0
         self.finished = False
 
-    def score_line(self, gh, ga):
-        score = f"{gh}-{ga}"
-        room = self.w.cols - len(score) - 2 - len(clean(self.me["label"], self.w.cols))
-        return (f"{self.w.display_name(self.home, room, self.me)} {score} "
-                f"{self.w.display_name(self.away, room, self.me)}")
+    def tile(self, team):
+        return "{B}" if team["id"] == self.me["af"] else "{R}"
+
+    def team_row(self, team, goals):
+        """Pastille + nom à gauche, score calé à droite : {R}LAVAL        0"""
+        g = str(goals)
+        room = self.w.cols - 1 - 1 - len(g)          # pastille + espace mini + score
+        name = self.w.display_name(team, room, self.me)
+        return self.tile(team) + name + " " * (self.w.cols - 1 - len(name) - len(g)) + g
+
+    def rows(self, gh, ga, third):
+        return [self.team_row(self.home, gh), self.team_row(self.away, ga), third]
 
     @staticmethod
     def minute(status):
@@ -279,19 +314,19 @@ class Tracker:
         status = fx["fixture"]["status"]
         if self.goals is None:
             self.goals = (gh, ga)
-            l2 = "COUP D'ENVOI" if (status.get("elapsed") or 0) <= 5 else "EN COURS"
-            self.w.board_send([self.score_line(gh, ga), l2, ""], 180)
+            l3 = "COUP D'ENVOI" if (status.get("elapsed") or 0) <= 5 else "EN COURS"
+            self.w.board_send(self.rows(gh, ga, l3), 180)
             return
         if (gh, ga) == self.goals:
             return
         oh, oa = self.goals
         self.goals = (gh, ga)
         if gh + ga < oh + oa:
-            l2 = "BUT ANNULE"
+            l3 = "BUT ANNULE"
         else:
             scorer = self.home if gh > oh else self.away
-            l2 = f"BUT {self.w.display_name(scorer, self.w.cols - 6, self.me)} !"
-        self.w.board_send([self.score_line(gh, ga), l2, self.minute(status)], 180)
+            l3 = f"{self.tile(scorer)}BUT ! {self.minute(status)}"
+        self.w.board_send(self.rows(gh, ga, l3), 180)
 
     def finish(self):
         if self.finished or self.goals is None:
@@ -305,7 +340,7 @@ class Tracker:
         me_home = self.home["id"] == self.me["af"]
         mine, theirs = (gh, ga) if me_home else (ga, gh)
         verdict = "VICTOIRE" if mine > theirs else "NUL" if mine == theirs else "DEFAITE"
-        self.w.board_send([self.score_line(gh, ga), "TERMINE", verdict],
+        self.w.board_send(self.rows(gh, ga, f"FIN - {verdict}"),
                           int(self.w.cfg.get("final_minutes") or 30))
         self.w.mark_done(self.match["event_id"])
 
