@@ -11,6 +11,7 @@ Diagnostic : GET /api/plugins/foot_live/data
 import json
 import logging
 import os
+import re
 import threading
 import time
 import unicodedata
@@ -175,21 +176,32 @@ class Worker:
         return clean(name.replace("-", " ").split()[0], room)
 
     # ---------- FiestaBoard
+    def colored(self, line):
+        """{B}/{R} -> codes couleur Vestaboard {67}/{63} dans le texte, longueur visible <= colonnes."""
+        out, visible = "", 0
+        for part in re.split(r"(\{[A-Z]\})", line):
+            if not part:
+                continue
+            if re.fullmatch(r"\{[A-Z]\}", part):
+                if visible < self.cols and part[1] in TILE:
+                    out += "{%d}" % TILE[part[1]]
+                    visible += 1
+                continue
+            txt = unicodedata.normalize("NFKD", part).encode("ascii", "ignore").decode().upper()
+            txt = txt[: self.cols - visible]
+            out += txt
+            visible += len(txt)
+        return out
+
     def board_send(self, lines, minutes):
-        """Essaie la grille avec pastilles ; si refusée, repli en texte simple. Renvoie True si affiché."""
+        """Texte avec pastilles {67}/{63} ; si refusé, repli en texte sans couleur. True si affiché."""
         board = self.cfg.get("board_id") or "primary"
         url = f"{FB_URL}/v1/boards/{board}/message"
-        cols = self.cols
-        rows = 3 if cols <= 15 else 6
-        plain = [clean(l.replace("{B}", " ").replace("{R}", " "), cols) for l in lines[:rows]]
-        attempts = []
-        if not self.st.get("grid_refused"):
-            grid = [encode(l, cols) for l in lines[:rows]]
-            grid += [[0] * cols for _ in range(rows - len(grid))]
-            attempts.append(("grille", {"characters": grid}))
-        attempts.append(("texte", {"lines": plain}))
+        rows = 3 if self.cols <= 15 else 6
+        plain = [clean(re.sub(r"\{[A-Z]\}", " ", l), self.cols) for l in lines[:rows]]
+        attempts = [("couleurs", [self.colored(l) for l in lines[:rows]]), ("texte", plain)]
         for mode, content in attempts:
-            body = {**content, "duration_minutes": minutes, "revert_mode": "schedule"}
+            body = {"lines": content, "duration_minutes": minutes, "revert_mode": "schedule"}
             try:
                 http_json(url, None, "POST", body)
                 note(f"board ({mode}) <- " + " / ".join(plain))
@@ -201,9 +213,6 @@ class Worker:
                 except Exception:
                     detail = ""
                 note(f"FiestaBoard a refusé ({mode}, {e.code}) {detail}")
-                if mode == "grille" and e.code == 400:
-                    self.st["grid_refused"] = True      # on ne réessaie plus la grille
-                    self.save_state()
             except Exception as e:
                 note(f"FiestaBoard injoignable : {e}")
                 return False
